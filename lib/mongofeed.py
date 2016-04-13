@@ -22,6 +22,8 @@ from pyalgotrade.barfeed import dbfeed
 from pyalgotrade.barfeed import membf
 from pyalgotrade import bar
 from pyalgotrade import dataseries
+from pyalgotrade.barfeed.yahoofeed import RowParser
+from pyalgotrade.utils import csvutils
 from pyalgotrade.utils import dt
 import datetime
 
@@ -127,6 +129,10 @@ class Feed(membf.BarFeed):
         self.__fromDateTime = fromDateTime
         self.__toDateTime = toDateTime
         self.__timezone = timezone
+        self.__dailyTime = datetime.time(0, 0, 0)
+
+    def getDailyBarTime(self):
+        return self.__dailyTime
     def barsHaveAdjClose(self):
         return True
 
@@ -134,6 +140,16 @@ class Feed(membf.BarFeed):
         return self.__db
     def getStockList(self):
         return self.__db.getStockList()
+    def loadBarsFromCSV(self,instrument,path):
+        loadedBars = []
+        rowParser = RowParser(self.getDailyBarTime(), self.getFrequency(), self.__timezone, False)
+        reader = csvutils.FastDictReader(open(path, "r"), fieldnames=rowParser.getFieldNames(), delimiter=rowParser.getDelimiter())
+        for row in reader:
+            bar_ = rowParser.parseBar(row)
+            if bar_ is not None:
+                loadedBars.append(bar_)
+
+        self.addBarsFromSequence(instrument, loadedBars)
 
     def loadBars(self, instrument):
         bars = self.__db.getBars(instrument, self.getFrequency(), self.__fromDateTime, self.__toDateTime, self.__timezone)
@@ -152,8 +168,9 @@ if __name__ == '__main__':
     #mongofeed.loadBars("600085")
     #mongofeed.loadBars("600750")
     
-    print feed.getStockList()
-    feed.loadAllBars()
+    #print feed.getStockList()
+    #feed.loadAllBars()
+    feed.loadBarsFromCSV("sh", "../data/sh.csv")
     
     for date,bars in feed:
         instruments = bars.getInstruments()

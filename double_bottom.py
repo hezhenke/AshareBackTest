@@ -6,14 +6,19 @@ import numpy as np
 
 from pyalgotrade import plotter
 from pyalgotrade.stratanalyzer import returns
+from pyalgotrade.broker import Order
+from pyalgotrade.technical import ma
 
 class DoubleBottomStrategy(TroyStrategy):
-    def __init__(self,start=None,end=None):
+    def __init__(self,start,end):
         TroyStrategy.__init__(self,start,end)
         self.__instruments = self._feed.getRegisteredInstruments()
         self.__position = {}
         self.__stop_loss_price = {}
         'add the techical indectitor to the feed'
+        self.__indexSma60 = ma.SMA(self._feed['sh'].getPriceDataSeries(), 60)
+        self.__indexSma10 = ma.SMA(self._feed['sh'].getPriceDataSeries(), 10)
+        self.__hasRisk = False
         for instrument in self.__instruments:
             self.__position[instrument] = None
         
@@ -26,10 +31,13 @@ class DoubleBottomStrategy(TroyStrategy):
         self.info("select double bottom stock:%s"%(selected_instruments))
     def handle_data(self, bars,instruments):
         #stop_loss
-        self.stop_loss(bars)
-        
+        #self.stop_loss(bars)
+        '''risk management''' 
+        self.risk_management(bars)
+        if self.__hasRisk:
+            return
         #stop_earn
-        self.stop_earn(bars)
+        #self.stop_earn(bars)
         #drop the stock was already in the poforlio
         instruments = self.filter_stock_to_buy(instruments)
         
@@ -50,14 +58,19 @@ class DoubleBottomStrategy(TroyStrategy):
         for instrument in buy_instruments:
             if self.__position[instrument] is None:
                 #calculate the cash for each stock
-                shares = int(self.getBroker().getCash() /left_poition_num / bars[instrument].getPrice())
+                shares = int(self.getBroker().getCash()*0.9 /left_poition_num / bars[instrument].getPrice())/100*100
                 # Enter a buy market order. The order is good till canceled.
-                self.__position[instrument] = self.enterLong(instrument, shares, True)
+                if shares >= 100:
+                    self.__position[instrument] = self.enterLong(instrument, shares, True)
     
     def onEnterOk(self, position):
         execInfo = position.getEntryOrder().getExecutionInfo()
         instrument = position.getInstrument()
-        self.info("BUY %s at ￥%.2f" % (instrument,execInfo.getPrice()))
+        self.info("BUY %s at $%.2f" % (instrument,execInfo.getPrice()))
+        ''' stop loss order '''
+        stopPrice = self.__stop_loss_price[instrument] * (1-0.04)
+        position.exitStop(stopPrice,True)
+        
     def onEnterCanceled(self, position):
         instrument = position.getInstrument()
         if instrument is not None:
@@ -65,16 +78,45 @@ class DoubleBottomStrategy(TroyStrategy):
             self.info("SELL %s " % (instrument))
 
     def onExitOk(self, position):
-        execInfo = position.getExitOrder().getExecutionInfo()
+        exitOrder = position.getExitOrder()
         instrument = position.getInstrument()
-        if instrument is not None:
+        execInfo = exitOrder.getExecutionInfo()
+        if exitOrder.getType() == Order.Type.STOP and instrument is not None:
             self.__position[instrument] = None
-            self.info("SELL %s at ￥%.2f" % (instrument,execInfo.getPrice()))
+            self.info("stop loss,SELL %s at $%.2f" % (instrument,execInfo.getPrice()))
+        elif exitOrder.getType() == Order.Type.MARKET and instrument is not None:
+            self.__position[instrument] = None
+            self.info("stop earn,SELL %s at $%.2f" % (instrument,execInfo.getPrice()))
+        else:
+            self.__position[instrument] = None
+            self.info("SELL %s at $%.2f" % (instrument,execInfo.getPrice()))
+            
+            
 
     def onExitCanceled(self, position):
+        
         instrument = position.getInstrument()
         if instrument is not None:
             self.__position[instrument].exitMarket()
+    
+    def risk_management(self,bars):
+        indexPrice = bars['sh'].getPrice()
+        if indexPrice < self.__indexSma60[-1]:
+            self.__hasRisk = True
+            position = self.getBroker().getPositions()
+            for instrument,shares in position.items():
+                if shares > 0 and self.__position[instrument] is not None:
+                    self.info("risk control,SELL %s" % (instrument))
+                    if self.__position[instrument].exitActive():
+                        self.__position[instrument].cancelExit()
+                    else:
+                        self.__position[instrument].exitMarket()
+        elif self.__hasRisk == True and indexPrice > self.__indexSma60[-1]:
+            self.__hasRisk = False
+            self.info("Risk release,Recover trade")
+        else:
+            pass
+            
             
     def stop_loss(self,bars):
         positions = self.getBroker().getPositions()
@@ -84,8 +126,8 @@ class DoubleBottomStrategy(TroyStrategy):
                 continue
             last_price = bars[instrument].getPrice() 
             stop_loss_price = self.__stop_loss_price[instrument]
-            if (last_price - stop_loss_price)/stop_loss_price <= -0.03 and not self.__position[instrument].exitActive() :
-                self.info("stop loss:%s,stop_loss_price:%.2f"%(instrument,self.__stop_loss_price[instrument]))
+            if (last_price - stop_loss_price)/stop_loss_price <= -0.04 and not self.__position[instrument].exitActive() :
+                self.info("stop loss:%s,stop_loss_price:$%.2f"%(instrument,self.__stop_loss_price[instrument]))
                 self.__position[instrument].exitMarket()
             
                 
@@ -95,13 +137,39 @@ class DoubleBottomStrategy(TroyStrategy):
         for instrument in positions.keys():
             if instrument not in active_instruments:
                 continue
-            last_price = bars[instrument].getPrice()
-            hist_h = self.history(instrument, "high", 5)
+            instrument_return = self.__position[instrument].getReturn()
+            age = self.__position[instrument].getAge()
+            hold_days = int(age.days)
+            
+            '''time stop earn'''
+            if (hold_days > 10 and instrument_return < 0.05) \
+            or (hold_days > 20 and instrument_return < 0.15) \
+            or (hold_days > 30 and instrument_return < 0.2) \
+            or instrument_return > 0.3 :
+                
+                if  not self.__position[instrument].exitActive():
+                    last_price = bars[instrument].getPrice()
+                    self.info("time top earn:%s,close price:%.2f"%(instrument,last_price))
+                    self.__position[instrument].exitMarket()
+                else:
+                    last_price = bars[instrument].getPrice()
+                    self.info("cancel and time top earn:%s,close price:%.2f"%(instrument,last_price))
+                    self.__position[instrument].cancelExit()
+                    
+                    
+            '''normal stop earn'''
+            '''
+            period = 5
+            if hold_days > 5:
+                period = hold_days
+            last_price = self.__position[instrument].getLastPrice()
+            hist_h = self.history(instrument, "high", period)
             high_price = max(hist_h)
-            if (high_price - last_price)/high_price > 0.1 and not self.__position[instrument].exitActive():
+            if (high_price - last_price)/high_price > 0.15 and not self.__position[instrument].exitActive():
                 self.info("stop earn:%s,close price:%.2f"%(instrument,last_price))
                 self.__position[instrument].exitMarket()
-                
+            '''
+            
     def filter_stock_to_buy(self,instruments):
         positions = self.getBroker().getPositions()
         return [instrument for instrument in instruments if instrument not in positions.keys()]
@@ -137,6 +205,7 @@ class DoubleBottomStrategy(TroyStrategy):
             hist_h = self.history(instrument, 'high', period)
             hist_l = self.history(instrument, 'low', period)
             hist_c = self.history(instrument, 'close', period)
+            hist_o = self.history(instrument, 'open', period)
             hist_v = self.history(instrument, 'volume', period)
             '''
             {
@@ -176,6 +245,19 @@ class DoubleBottomStrategy(TroyStrategy):
             if hd > ld:
                 continue
             
+            last_open = hist_o[-1]
+            last_close = hist_c[-1]
+            pre_last_close = hist_c[-2]
+            
+            raise_percent = (pre_last_close - last_close)/pre_last_close
+            raise_percent2 = (last_close - last_open)/last_open
+            
+            if raise_percent > 0.03 or raise_percent < -0.03:
+                continue
+            
+            if raise_percent2 > 0.03 or raise_percent2 < -0.02:
+                continue
+            
             
             
             
@@ -212,12 +294,16 @@ class DoubleBottomStrategy(TroyStrategy):
             
             if op1:
                 self.__stop_loss_price[instrument] = trough[0]
+            else:
+                continue
+            '''
             elif op2:
                 self.__stop_loss_price[instrument] = trough[1]
             elif op3:
                 self.__stop_loss_price[instrument] = trough[2]
-            else:
-                continue
+            '''
+                
+            
             
             selected_instruments.append(instrument)
         return selected_instruments
@@ -306,14 +392,14 @@ class ZigZag(object):
         return pivots
     
 if __name__ == '__main__':
-    st = DoubleBottomStrategy('2013-05-25','2016-04-07')
+    st = DoubleBottomStrategy('2013-05-25','2016-04-08')
     
     # Attach a returns analyzers to the strategy.
     returnsAnalyzer = returns.Returns()
     st.attachAnalyzer(returnsAnalyzer)
     
     # Attach the plotter to the strategy.
-    plt = plotter.StrategyPlotter(st)
+    plt = plotter.StrategyPlotter(st,False)
     # Include the SMA in the instrument's subplot to get it displayed along with the closing prices.
     #plt.getInstrumentSubplot("orcl").addDataSeries("SMA", st.getSMA())
     # Plot the simple returns on each bar.
@@ -321,6 +407,8 @@ if __name__ == '__main__':
 
     st.run()
     st.info("Final portfolio value: $%.2f" % st.getResult())
-
-    # Plot the strategy.
-    plt.plot()
+    
+    fig = plt.buildFigure()
+    fig.savefig("/tmp/test.png")
+    # Plot the strategy
+    #plt.plot()

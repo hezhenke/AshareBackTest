@@ -82,6 +82,8 @@ MYSQLDB_CHARSET = 'utf8'
 MONGO_DATABASE = 'stock2'
 MONGO_HOST = '127.0.0.1'
 MONGO_PORT = 27017
+MONGO_HIST_COLLECTION = "history_data"
+MONGO_STOCK_LIST_COLLECTION = "stock_list"
 
 import sys
 PY3 = (sys.version_info[0] >= 3)

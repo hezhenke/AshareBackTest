@@ -1,12 +1,13 @@
 # -*- coding:utf-8 -*- 
 from pyalgotrade import strategy
-from pyalgotrade.barfeed import yahoofeed
+from lib import mongofeed
 import os
 import datetime
 class TroyStrategy(strategy.BacktestingStrategy):
     
-    def __init__(self,start=None,end=None):
+    def __init__(self,start,end):
         ''' load all the ashare feed'''
+        '''
         project_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         data_root_dir = os.path.join(project_root_dir,"data","history")
         feed = yahoofeed.Feed()
@@ -16,16 +17,28 @@ class TroyStrategy(strategy.BacktestingStrategy):
                     stock_code = os.path.splitext(filename)[0]
                     csvfile = os.path.join(data_root_dir, filename)
                     feed.addBarsFromCSV(stock_code, csvfile)
+        '''
+    
+        self._start_date = datetime.datetime.strptime(start,'%Y-%m-%d')
+        self._end_date = datetime.datetime.strptime(end,'%Y-%m-%d')
+        
+        #1 year ago
+        start_date_last_year = self._start_date - datetime.timedelta(days=360)
+        feed_start_date = start_date_last_year.strftime('%Y-%m-%d')
+        feed_end_date = self._end_date.strftime('%Y-%m-%d')
+            
+
+        feed = mongofeed.Feed(feed_start_date, feed_end_date)
+        feed.loadAllBars()
+        project_root_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        csv_file_path = os.path.join(project_root_dir,"data","sh.csv")
+        feed.loadBarsFromCSV("sh", csv_file_path)
+        
         strategy.BacktestingStrategy.__init__(self, feed)
         self.setUseAdjustedValues(True)
         self._feed = self.getFeed()
         self._universe = []
-        self._start_date = None
-        self._end_date = None
-        if start is not None:
-            self._start_date = datetime.datetime.strptime(start,'%Y-%m-%d')
-        if end is not None:
-            self._end_date = datetime.datetime.strptime(end,'%Y-%m-%d')
+        
         
     def before_trading(self,bars):
         '''更新股票池'''
